@@ -43,7 +43,13 @@ export default function RegisterPage() {
       setError(error)
       setLoading(false)
     } else if (user) {
-      router.push('/dashboard')
+      // Check for pending invite token
+      const pendingToken = sessionStorage.getItem('pendingInviteToken')
+      if (pendingToken) {
+        router.push(`/join/${pendingToken}`)
+      } else {
+        router.push('/dashboard')
+      }
     }
   }
 

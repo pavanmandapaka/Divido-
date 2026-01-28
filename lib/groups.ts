@@ -10,7 +10,9 @@ import {
   query,
   where,
   getDocs,
-  getDoc
+  getDoc,
+  updateDoc,
+  setDoc
 } from 'firebase/firestore';
 import { db } from './firebase';
 
@@ -49,6 +51,20 @@ export interface GroupMember {
   displayName: string;
   email: string;
   photoURL: string;
+}
+
+export interface GroupInvite {
+  inviteId: string;
+  groupId: string;
+  groupName: string;
+  createdBy: string;
+  createdByName: string;
+  token: string;
+  expiresAt: Timestamp;
+  isActive: boolean;
+  usageCount: number;
+  maxUsage: number | null; // null = unlimited
+  createdAt: Timestamp;
 }
 
 /**
@@ -373,5 +389,392 @@ export async function getGroupById(
   } catch (error) {
     console.error('Error fetching group:', error);
     throw error;
+  }
+}
+
+/**
+ * Generate a secure random token for invite links
+ * Uses crypto.randomUUID for secure token generation
+ * 
+ * @returns A unique token string
+ */
+function generateInviteToken(): string {
+  // Generate a secure random token
+  // Using crypto.randomUUID() for strong randomness
+  const uuid = crypto.randomUUID();
+  // Remove hyphens and take first 16 characters for cleaner URLs
+  return uuid.replace(/-/g, '').substring(0, 16);
+}
+
+/**
+ * Create an invite link for a group
+ * Only group admins can create invites
+ * 
+ * @param groupId - The group ID to create invite for
+ * @param userId - The user creating the invite (must be admin)
+ * @param expiresInHours - Hours until invite expires (default 168 = 7 days)
+ * @param maxUsage - Maximum number of times invite can be used (null = unlimited)
+ * @returns Object with invite token and expiry, or error
+ */
+export async function createGroupInvite(
+  groupId: string,
+  userId: string,
+  expiresInHours: number = 168, // Default 7 days
+  maxUsage: number | null = null
+): Promise<{
+  success: boolean;
+  inviteId?: string;
+  token?: string;
+  expiresAt?: Date;
+  error?: string;
+}> {
+  try {
+    if (!db) {
+      return { success: false, error: 'Database not initialized' };
+    }
+
+    // Verify user is an admin of this group
+    const memberDocId = `${groupId}_${userId}`;
+    const memberRef = doc(db, 'groupMembers', memberDocId);
+    const memberSnap = await getDoc(memberRef);
+
+    if (!memberSnap.exists()) {
+      return { success: false, error: 'You are not a member of this group' };
+    }
+
+    if (memberSnap.data().role !== 'admin') {
+      return { success: false, error: 'Only admins can create invite links' };
+    }
+
+    // Get group details
+    const groupRef = doc(db, 'groups', groupId);
+    const groupSnap = await getDoc(groupRef);
+
+    if (!groupSnap.exists()) {
+      return { success: false, error: 'Group not found' };
+    }
+
+    const groupData = groupSnap.data() as Group;
+
+    // Generate unique token
+    const token = generateInviteToken();
+    
+    // Calculate expiry timestamp
+    const expiresAt = new Date();
+    expiresAt.setHours(expiresAt.getHours() + expiresInHours);
+
+    // Create invite document
+    const invitesRef = collection(db, 'groupInvites');
+    const newInviteRef = doc(invitesRef);
+    const inviteId = newInviteRef.id;
+
+    const inviteData: Omit<GroupInvite, 'createdAt' | 'expiresAt'> & {
+      createdAt: ReturnType<typeof serverTimestamp>;
+      expiresAt: Timestamp;
+    } = {
+      inviteId,
+      groupId,
+      groupName: groupData.name,
+      createdBy: userId,
+      createdByName: memberSnap.data().displayName,
+      token,
+      expiresAt: Timestamp.fromDate(expiresAt),
+      isActive: true,
+      usageCount: 0,
+      maxUsage,
+      createdAt: serverTimestamp(),
+    };
+
+    await setDoc(newInviteRef, inviteData);
+
+    console.log('Invite created:', inviteId, 'Token:', token);
+
+    return {
+      success: true,
+      inviteId,
+      token,
+      expiresAt,
+    };
+
+  } catch (error: any) {
+    console.error('Error creating invite:', error);
+    return {
+      success: false,
+      error: error.message || 'Failed to create invite',
+    };
+  }
+}
+
+/**
+ * Validate an invite token
+ * Checks if token exists, is active, not expired, and under usage limit
+ * 
+ * @param token - The invite token to validate
+ * @returns Validation result with group info or error
+ */
+export async function validateInviteToken(token: string): Promise<{
+  valid: boolean;
+  inviteId?: string;
+  groupId?: string;
+  groupName?: string;
+  error?: string;
+}> {
+  try {
+    if (!db) {
+      return { valid: false, error: 'Database not initialized' };
+    }
+
+    if (!token || token.trim().length === 0) {
+      return { valid: false, error: 'Invalid token' };
+    }
+
+    // Query for invite by token
+    const invitesRef = collection(db, 'groupInvites');
+    const q = query(invitesRef, where('token', '==', token.trim()));
+    const querySnapshot = await getDocs(q);
+
+    if (querySnapshot.empty) {
+      return { valid: false, error: 'Invite not found' };
+    }
+
+    // Get the first (should be only) matching invite
+    const inviteDoc = querySnapshot.docs[0];
+    const invite = inviteDoc.data() as GroupInvite;
+
+    // Check if invite is active
+    if (!invite.isActive) {
+      return { valid: false, error: 'This invite has been deactivated' };
+    }
+
+    // Check expiration
+    const now = new Date();
+    const expiryDate = invite.expiresAt.toDate();
+    
+    if (now > expiryDate) {
+      return { valid: false, error: 'This invite has expired' };
+    }
+
+    // Check usage limit
+    if (invite.maxUsage !== null && invite.usageCount >= invite.maxUsage) {
+      return { valid: false, error: 'This invite has reached its usage limit' };
+    }
+
+    // Check if group still exists
+    const groupRef = doc(db, 'groups', invite.groupId);
+    const groupSnap = await getDoc(groupRef);
+
+    if (!groupSnap.exists()) {
+      return { valid: false, error: 'Group no longer exists' };
+    }
+
+    return {
+      valid: true,
+      inviteId: invite.inviteId,
+      groupId: invite.groupId,
+      groupName: invite.groupName,
+    };
+
+  } catch (error: any) {
+    console.error('Error validating invite:', error);
+    return {
+      valid: false,
+      error: error.message || 'Failed to validate invite',
+    };
+  }
+}
+
+/**
+ * Revoke/deactivate an invite link
+ * Only the creator or group admins can revoke invites
+ * 
+ * @param inviteId - The invite ID to revoke
+ * @param userId - The user attempting to revoke (must be admin)
+ * @returns Success status
+ */
+export async function revokeInvite(
+  inviteId: string,
+  userId: string
+): Promise<{
+  success: boolean;
+  error?: string;
+}> {
+  try {
+    if (!db) {
+      return { success: false, error: 'Database not initialized' };
+    }
+
+    // Get invite details
+    const inviteRef = doc(db, 'groupInvites', inviteId);
+    const inviteSnap = await getDoc(inviteRef);
+
+    if (!inviteSnap.exists()) {
+      return { success: false, error: 'Invite not found' };
+    }
+
+    const invite = inviteSnap.data() as GroupInvite;
+
+    // Verify user is admin of the group
+    const memberDocId = `${invite.groupId}_${userId}`;
+    const memberRef = doc(db, 'groupMembers', memberDocId);
+    const memberSnap = await getDoc(memberRef);
+
+    if (!memberSnap.exists() || memberSnap.data().role !== 'admin') {
+      return { success: false, error: 'Only admins can revoke invites' };
+    }
+
+    // Deactivate the invite
+    await updateDoc(inviteRef, {
+      isActive: false,
+      updatedAt: serverTimestamp(),
+    });
+
+    console.log('Invite revoked:', inviteId);
+
+    return { success: true };
+
+  } catch (error: any) {
+    console.error('Error revoking invite:', error);
+    return {
+      success: false,
+      error: error.message || 'Failed to revoke invite',
+    };
+  }
+}
+
+/**
+ * Join a group using an invite token
+ * Validates token and adds user as a member
+ * 
+ * @param token - The invite token
+ * @param userId - The user ID joining
+ * @param userDisplayName - Display name of user
+ * @param userEmail - Email of user
+ * @param userPhotoURL - Photo URL of user (optional)
+ * @returns Success status with groupId
+ */
+export async function joinGroupWithToken(
+  token: string,
+  userId: string,
+  userDisplayName: string,
+  userEmail: string,
+  userPhotoURL?: string
+): Promise<{
+  success: boolean;
+  groupId?: string;
+  error?: string;
+}> {
+  try {
+    if (!db) {
+      return { success: false, error: 'Database not initialized' };
+    }
+
+    if (!userId) {
+      return { success: false, error: 'User must be authenticated' };
+    }
+
+    console.log('Attempting to join group with token:', token);
+
+    // Step 1: Validate the invite token
+    const validation = await validateInviteToken(token);
+    
+    if (!validation.valid) {
+      return { success: false, error: validation.error || 'Invalid invite' };
+    }
+
+    const { groupId, inviteId } = validation;
+
+    if (!groupId || !inviteId) {
+      return { success: false, error: 'Invalid invite data' };
+    }
+
+    console.log('Token validated. Group:', groupId);
+
+    // Step 2: Check if user is already a member
+    const memberDocId = `${groupId}_${userId}`;
+    const memberRef = doc(db, 'groupMembers', memberDocId);
+    const existingMember = await getDoc(memberRef);
+
+    if (existingMember.exists()) {
+      const memberData = existingMember.data();
+      if (memberData.status === 'active') {
+        return { 
+          success: true, 
+          groupId,
+          // User already member, just return success
+        };
+      }
+      // If left or removed, we'll reactivate below
+    }
+
+    // Step 3: Get group details and invite details
+    const groupRef = doc(db, 'groups', groupId);
+    const inviteRef = doc(db, 'groupInvites', inviteId);
+    
+    const [groupSnap, inviteSnap] = await Promise.all([
+      getDoc(groupRef),
+      getDoc(inviteRef)
+    ]);
+
+    if (!groupSnap.exists()) {
+      return { success: false, error: 'Group not found' };
+    }
+
+    if (!inviteSnap.exists()) {
+      return { success: false, error: 'Invite not found' };
+    }
+
+    const invite = inviteSnap.data() as GroupInvite;
+    const group = groupSnap.data() as Group;
+
+    // Step 4: Create or update member document and increment group member count
+    const batch = writeBatch(db);
+
+    const memberData: Omit<GroupMember, 'joinedAt'> & {
+      joinedAt: ReturnType<typeof serverTimestamp>;
+    } = {
+      groupId,
+      userId,
+      role: 'member', // Always join as member
+      joinedAt: serverTimestamp(),
+      invitedBy: invite.createdBy,
+      status: 'active',
+      displayName: userDisplayName,
+      email: userEmail,
+      photoURL: userPhotoURL || '',
+    };
+
+    batch.set(memberRef, memberData);
+
+    // Increment group member count (only if new member)
+    if (!existingMember.exists() || existingMember.data().status !== 'active') {
+      batch.update(groupRef, {
+        memberCount: (group.memberCount || 0) + 1,
+        updatedAt: serverTimestamp(),
+      });
+    }
+
+    // Increment invite usage count
+    batch.update(inviteRef, {
+      usageCount: invite.usageCount + 1,
+      updatedAt: serverTimestamp(),
+    });
+
+    // Commit all changes atomically
+    console.log('Committing batch: adding member and updating counts');
+    await batch.commit();
+
+    console.log('Successfully joined group:', groupId);
+
+    return {
+      success: true,
+      groupId,
+    };
+
+  } catch (error: any) {
+    console.error('Error joining group:', error);
+    return {
+      success: false,
+      error: error.message || 'Failed to join group',
+    };
   }
 }

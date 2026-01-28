@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useRouter, useParams } from 'next/navigation'
 import { useAuth } from '@/contexts/AuthProvider'
-import { getGroupById, Group } from '@/lib/groups'
+import { getGroupById, Group, createGroupInvite } from '@/lib/groups'
 import Link from 'next/link'
 
 export default function GroupDetailPage() {
@@ -15,6 +15,9 @@ export default function GroupDetailPage() {
   const [role, setRole] = useState<'admin' | 'member' | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [inviteLink, setInviteLink] = useState('')
+  const [generatingInvite, setGeneratingInvite] = useState(false)
+  const [copySuccess, setCopySuccess] = useState(false)
 
   const groupId = params.groupId as string
 
@@ -56,6 +59,39 @@ export default function GroupDetailPage() {
       setError('Failed to load group details')
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleGenerateInvite = async () => {
+    if (!user || !groupId) return
+
+    setGeneratingInvite(true)
+    setError('')
+
+    try {
+      const result = await createGroupInvite(groupId, user.uid)
+      
+      if (result.success && result.token) {
+        const link = `${window.location.origin}/join/${result.token}`
+        setInviteLink(link)
+      } else {
+        setError(result.error || 'Failed to generate invite link')
+      }
+    } catch (err) {
+      console.error('Error generating invite:', err)
+      setError('Failed to generate invite link')
+    } finally {
+      setGeneratingInvite(false)
+    }
+  }
+
+  const handleCopyLink = async () => {
+    try {
+      await navigator.clipboard.writeText(inviteLink)
+      setCopySuccess(true)
+      setTimeout(() => setCopySuccess(false), 2000)
+    } catch (err) {
+      console.error('Failed to copy:', err)
     }
   }
 
@@ -165,6 +201,53 @@ export default function GroupDetailPage() {
             </div>
           </div>
         </div>
+
+        {/* Invite Section - Only for Admins */}
+        {role === 'admin' && (
+          <div className="bg-white rounded-lg shadow-md p-8 mt-6">
+            <h2 className="text-xl font-bold text-slate-900 mb-4">
+              Invite Members
+            </h2>
+            
+            {!inviteLink ? (
+              <div>
+                <p className="text-slate-600 mb-4">
+                  Generate an invite link to add new members to this group
+                </p>
+                <button
+                  onClick={handleGenerateInvite}
+                  disabled={generatingInvite}
+                  className="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 disabled:bg-gray-400"
+                >
+                  {generatingInvite ? 'Generating...' : 'Generate Invite Link'}
+                </button>
+              </div>
+            ) : (
+              <div>
+                <p className="text-slate-600 mb-3">
+                  Share this link with people you want to invite:
+                </p>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={inviteLink}
+                    readOnly
+                    className="flex-1 px-4 py-2 border border-slate-300 rounded-lg bg-slate-50 text-sm"
+                  />
+                  <button
+                    onClick={handleCopyLink}
+                    className="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700"
+                  >
+                    {copySuccess ? '✓ Copied!' : 'Copy'}
+                  </button>
+                </div>
+                <p className="text-xs text-slate-500 mt-2">
+                  This link expires in 7 days
+                </p>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   )
