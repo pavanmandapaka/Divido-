@@ -6,7 +6,11 @@ import {
   doc, 
   writeBatch, 
   serverTimestamp,
-  Timestamp 
+  Timestamp,
+  query,
+  where,
+  getDocs,
+  getDoc
 } from 'firebase/firestore';
 import { db } from './firebase';
 
@@ -75,6 +79,20 @@ export async function createGroup(input: CreateGroupInput): Promise<{
   error?: string;
 }> {
   try {
+    // Check if we're in a browser environment
+    if (typeof window === 'undefined') {
+      console.error('Cannot create group on server side');
+      return { success: false, error: 'This operation must be performed in the browser' };
+    }
+
+    // Check if Firestore is initialized
+    if (!db) {
+      console.error('Firestore database not initialized');
+      return { success: false, error: 'Database not initialized. Please refresh the page.' };
+    }
+
+    console.log('createGroup called with:', { name: input.name, currency: input.currency });
+
     // Validate input
     if (!input.name || input.name.trim().length === 0) {
       return { success: false, error: 'Group name is required' };
@@ -141,12 +159,31 @@ export async function createGroup(input: CreateGroupInput): Promise<{
 
     // Use batch write for atomicity
     // Both documents are created together or not at all
+    console.log('Creating batch write...');
     const batch = writeBatch(db);
     batch.set(newGroupRef, groupData);
     batch.set(memberRef, memberData);
 
-    // Commit the batch
-    await batch.commit();
+    console.log('Committing batch to Firestore...');
+    console.log('Writing to collections: groups and groupMembers');
+    
+    try {
+      await batch.commit();
+      console.log('Batch committed successfully');
+    } catch (batchError: any) {
+      console.error('Batch commit failed:', batchError);
+      console.error('Error code:', batchError.code);
+      console.error('Error message:', batchError.message);
+      
+      if (batchError.code === 'permission-denied') {
+        return { 
+          success: false, 
+          error: 'Permission denied. Please check Firestore security rules.' 
+        };
+      }
+      
+      throw batchError;
+    }
 
     console.log('Group created successfully:', groupId);
 
@@ -202,3 +239,139 @@ export function isValidCurrency(currency: string): boolean {
 // - generateInviteLink()
 // - joinGroupViaInvite()
 // - revokeInviteLink()
+
+
+/**
+ * Get all groups for a user
+ * 
+ * Query Strategy:
+ * 1. Query groupMembers collection where userId === current user
+ * 2. Extract groupIds from results
+ * 3. Fetch full group documents from groups collection
+ * 4. Merge group data with member role
+ * 
+ * @param userId - The user ID to fetch groups for
+ * @returns Array of groups with user's role
+ */
+export async function getUserGroups(userId: string): Promise<Array<{
+  group: Group;
+  role: 'admin' | 'member';
+}>> {
+  try {
+    if (!userId) {
+      throw new Error('User ID is required');
+    }
+
+    // Step 1: Query groupMembers collection for this user
+    const groupMembersRef = collection(db, 'groupMembers');
+    const q = query(
+      groupMembersRef,
+      where('userId', '==', userId),
+      where('status', '==', 'active')
+    );
+
+    const querySnapshot = await getDocs(q);
+    
+    if (querySnapshot.empty) {
+      return [];
+    }
+
+    // Step 2: Extract group IDs and roles
+    const memberData = querySnapshot.docs.map(doc => ({
+      groupId: doc.data().groupId,
+      role: doc.data().role as 'admin' | 'member'
+    }));
+
+    // Step 3: Fetch full group documents
+    const groupsRef = collection(db, 'groups');
+    const groupPromises = memberData.map(async ({ groupId, role }) => {
+      const groupDocRef = doc(groupsRef, groupId);
+      const groupSnap = await getDoc(groupDocRef);
+      
+      if (groupSnap.exists()) {
+        return {
+          group: { ...groupSnap.data(), groupId } as Group,
+          role
+        };
+      }
+      return null;
+    });
+
+    const results = await Promise.all(groupPromises);
+    
+    // Filter out null values (groups that don't exist)
+    return results.filter((item): item is { group: Group; role: 'admin' | 'member' } => item !== null);
+    
+  } catch (error) {
+    console.error('Error fetching user groups:', error);
+    throw error;
+  }
+}
+
+/**
+ * Get a single group by ID with user's role
+ * 
+ * Verifies the user is a member and returns group details with their role
+ * Includes retry logic for immediate reads after creation
+ * 
+ * @param groupId - The group ID to fetch
+ * @param userId - The user ID to verify membership
+ * @param retries - Number of retries for propagation delay (default 3)
+ * @returns Group details with user's role, or null if not a member
+ */
+export async function getGroupById(
+  groupId: string, 
+  userId: string,
+  retries: number = 3
+): Promise<{ group: Group; role: 'admin' | 'member' } | null> {
+  try {
+    if (!groupId || !userId) {
+      throw new Error('Group ID and User ID are required');
+    }
+
+    // Check if user is a member of this group
+    const memberDocId = `${groupId}_${userId}`;
+    const memberRef = doc(db, 'groupMembers', memberDocId);
+    
+    let memberSnap = await getDoc(memberRef);
+    
+    // Retry logic for immediate reads after creation (Firestore propagation delay)
+    let attempts = 0;
+    while (!memberSnap.exists() && attempts < retries) {
+      await new Promise(resolve => setTimeout(resolve, 200)); // 200ms delay
+      memberSnap = await getDoc(memberRef);
+      attempts++;
+      console.log(`Retry ${attempts} for member document`);
+    }
+
+    if (!memberSnap.exists() || memberSnap.data().status !== 'active') {
+      return null; // User is not an active member
+    }
+
+    // Fetch the group document
+    const groupRef = doc(db, 'groups', groupId);
+    let groupSnap = await getDoc(groupRef);
+    
+    // Retry logic for group document
+    attempts = 0;
+    while (!groupSnap.exists() && attempts < retries) {
+      await new Promise(resolve => setTimeout(resolve, 200));
+      groupSnap = await getDoc(groupRef);
+      attempts++;
+      console.log(`Retry ${attempts} for group document`);
+    }
+
+    if (!groupSnap.exists()) {
+      return null; // Group doesn't exist
+    }
+
+    return {
+      group: { ...groupSnap.data(), groupId } as Group,
+      role: memberSnap.data().role as 'admin' | 'member'
+    };
+
+  } catch (error) {
+    console.error('Error fetching group:', error);
+    throw error;
+  }
+}

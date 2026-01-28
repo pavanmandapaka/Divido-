@@ -21,16 +21,20 @@ const firebaseConfig = {
   appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID || '',
 };
 
-// Initialize Firebase
-let app: FirebaseApp;
+// Initialize Firebase only on client side
+let app: FirebaseApp | undefined;
+let auth: Auth | undefined;
+let db: Firestore | undefined;
 
 if (typeof window !== 'undefined') {
   app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
+  auth = getAuth(app);
+  db = getFirestore(app);
+  console.log('Firebase initialized on client');
 }
 
-// Initialize services - will be undefined on server side, but that's OK
-export const auth = typeof window !== 'undefined' ? getAuth(app) : {} as Auth;
-export const db = typeof window !== 'undefined' ? getFirestore(app) : {} as Firestore;
+// Export with proper fallbacks
+export { auth, db };
 
 // Google Auth Provider
 const googleProvider = new GoogleAuthProvider();
