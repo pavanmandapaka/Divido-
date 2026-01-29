@@ -12,9 +12,18 @@ import {
   getDocs,
   getDoc,
   updateDoc,
-  setDoc
+  setDoc,
+  Firestore
 } from 'firebase/firestore';
 import { db } from './firebase';
+
+// Helper to ensure db is initialized
+function getDb(): Firestore {
+  if (!db) {
+    throw new Error('Firestore is not initialized');
+  }
+  return db;
+}
 
 // TypeScript interfaces for type safety
 export interface CreateGroupInput {
@@ -131,13 +140,13 @@ export async function createGroup(input: CreateGroupInput): Promise<{
     }
 
     // Generate new group ID
-    const groupsRef = collection(db, 'groups');
+    const groupsRef = collection(getDb(), 'groups');
     const newGroupRef = doc(groupsRef);
     const groupId = newGroupRef.id;
 
     // Create composite key for groupMembers: {groupId}_{userId}
     const memberDocId = `${groupId}_${input.createdBy}`;
-    const groupMembersRef = collection(db, 'groupMembers');
+    const groupMembersRef = collection(getDb(), 'groupMembers');
     const memberRef = doc(groupMembersRef, memberDocId);
 
     // Prepare group document
@@ -176,7 +185,7 @@ export async function createGroup(input: CreateGroupInput): Promise<{
     // Use batch write for atomicity
     // Both documents are created together or not at all
     console.log('Creating batch write...');
-    const batch = writeBatch(db);
+    const batch = writeBatch(getDb());
     batch.set(newGroupRef, groupData);
     batch.set(memberRef, memberData);
 
@@ -279,7 +288,7 @@ export async function getUserGroups(userId: string): Promise<Array<{
     }
 
     // Step 1: Query groupMembers collection for this user
-    const groupMembersRef = collection(db, 'groupMembers');
+    const groupMembersRef = collection(getDb(), 'groupMembers');
     const q = query(
       groupMembersRef,
       where('userId', '==', userId),
@@ -299,7 +308,7 @@ export async function getUserGroups(userId: string): Promise<Array<{
     }));
 
     // Step 3: Fetch full group documents
-    const groupsRef = collection(db, 'groups');
+    const groupsRef = collection(getDb(), 'groups');
     const groupPromises = memberData.map(async ({ groupId, role }) => {
       const groupDocRef = doc(groupsRef, groupId);
       const groupSnap = await getDoc(groupDocRef);
@@ -347,7 +356,7 @@ export async function getGroupById(
 
     // Check if user is a member of this group
     const memberDocId = `${groupId}_${userId}`;
-    const memberRef = doc(db, 'groupMembers', memberDocId);
+    const memberRef = doc(getDb(), 'groupMembers', memberDocId);
     
     let memberSnap = await getDoc(memberRef);
     
@@ -365,7 +374,7 @@ export async function getGroupById(
     }
 
     // Fetch the group document
-    const groupRef = doc(db, 'groups', groupId);
+    const groupRef = doc(getDb(), 'groups', groupId);
     let groupSnap = await getDoc(groupRef);
     
     // Retry logic for group document
@@ -435,7 +444,7 @@ export async function createGroupInvite(
 
     // Verify user is an admin of this group
     const memberDocId = `${groupId}_${userId}`;
-    const memberRef = doc(db, 'groupMembers', memberDocId);
+    const memberRef = doc(getDb(), 'groupMembers', memberDocId);
     const memberSnap = await getDoc(memberRef);
 
     if (!memberSnap.exists()) {
@@ -447,7 +456,7 @@ export async function createGroupInvite(
     }
 
     // Get group details
-    const groupRef = doc(db, 'groups', groupId);
+    const groupRef = doc(getDb(), 'groups', groupId);
     const groupSnap = await getDoc(groupRef);
 
     if (!groupSnap.exists()) {
@@ -464,7 +473,7 @@ export async function createGroupInvite(
     expiresAt.setHours(expiresAt.getHours() + expiresInHours);
 
     // Create invite document
-    const invitesRef = collection(db, 'groupInvites');
+    const invitesRef = collection(getDb(), 'groupInvites');
     const newInviteRef = doc(invitesRef);
     const inviteId = newInviteRef.id;
 
@@ -529,7 +538,7 @@ export async function validateInviteToken(token: string): Promise<{
     }
 
     // Query for invite by token
-    const invitesRef = collection(db, 'groupInvites');
+    const invitesRef = collection(getDb(), 'groupInvites');
     const q = query(invitesRef, where('token', '==', token.trim()));
     const querySnapshot = await getDocs(q);
 
@@ -560,7 +569,7 @@ export async function validateInviteToken(token: string): Promise<{
     }
 
     // Check if group still exists
-    const groupRef = doc(db, 'groups', invite.groupId);
+    const groupRef = doc(getDb(), 'groups', invite.groupId);
     const groupSnap = await getDoc(groupRef);
 
     if (!groupSnap.exists()) {
@@ -604,7 +613,7 @@ export async function revokeInvite(
     }
 
     // Get invite details
-    const inviteRef = doc(db, 'groupInvites', inviteId);
+    const inviteRef = doc(getDb(), 'groupInvites', inviteId);
     const inviteSnap = await getDoc(inviteRef);
 
     if (!inviteSnap.exists()) {
@@ -615,7 +624,7 @@ export async function revokeInvite(
 
     // Verify user is admin of the group
     const memberDocId = `${invite.groupId}_${userId}`;
-    const memberRef = doc(db, 'groupMembers', memberDocId);
+    const memberRef = doc(getDb(), 'groupMembers', memberDocId);
     const memberSnap = await getDoc(memberRef);
 
     if (!memberSnap.exists() || memberSnap.data().role !== 'admin') {
@@ -691,7 +700,7 @@ export async function joinGroupWithToken(
 
     // Step 2: Check if user is already a member
     const memberDocId = `${groupId}_${userId}`;
-    const memberRef = doc(db, 'groupMembers', memberDocId);
+    const memberRef = doc(getDb(), 'groupMembers', memberDocId);
     const existingMember = await getDoc(memberRef);
 
     if (existingMember.exists()) {
@@ -707,8 +716,8 @@ export async function joinGroupWithToken(
     }
 
     // Step 3: Get group details and invite details
-    const groupRef = doc(db, 'groups', groupId);
-    const inviteRef = doc(db, 'groupInvites', inviteId);
+    const groupRef = doc(getDb(), 'groups', groupId);
+    const inviteRef = doc(getDb(), 'groupInvites', inviteId);
     
     const [groupSnap, inviteSnap] = await Promise.all([
       getDoc(groupRef),
@@ -727,7 +736,7 @@ export async function joinGroupWithToken(
     const group = groupSnap.data() as Group;
 
     // Step 4: Create or update member document and increment group member count
-    const batch = writeBatch(db);
+    const batch = writeBatch(getDb());
 
     const memberData: Omit<GroupMember, 'joinedAt'> & {
       joinedAt: ReturnType<typeof serverTimestamp>;

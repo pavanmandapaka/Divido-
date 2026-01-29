@@ -27,6 +27,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const router = useRouter()
 
   useEffect(() => {
+    if (!auth) {
+      console.error('Firebase auth not initialized')
+      setLoading(false)
+      return
+    }
+
     try {
       const unsubscribe = onAuthStateChanged(auth, (user) => {
         setUser(user)
@@ -41,6 +47,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const signOut = async () => {
+    if (!auth) {
+      console.error('Firebase auth not initialized')
+      return
+    }
+
     try {
       await firebaseSignOut(auth)
       router.push('/login')

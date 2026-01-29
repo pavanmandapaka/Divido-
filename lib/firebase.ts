@@ -41,6 +41,10 @@ const googleProvider = new GoogleAuthProvider();
 
 // Create user document in Firestore
 async function createUserDocument(uid: string, name: string, email: string, photoURL: string = '') {
+  if (!db) {
+    console.error('Firestore not initialized');
+    return;
+  }
   const userRef = doc(db, 'users', uid);
   const userSnap = await getDoc(userRef);
   
@@ -58,6 +62,10 @@ async function createUserDocument(uid: string, name: string, email: string, phot
 // Email/Password Sign Up
 export async function signUpWithEmail(name: string, email: string, password: string) {
   try {
+    if (!auth) {
+      return { user: null, error: 'Firebase auth not initialized' };
+    }
+    
     if (!process.env.NEXT_PUBLIC_FIREBASE_API_KEY || 
         process.env.NEXT_PUBLIC_FIREBASE_API_KEY === 'AIzaSyDummyKeyForDevelopment123456789') {
       return { 
@@ -78,6 +86,10 @@ export async function signUpWithEmail(name: string, email: string, password: str
 // Email/Password Login
 export async function loginWithEmail(email: string, password: string) {
   try {
+    if (!auth) {
+      return { user: null, error: 'Firebase auth not initialized' };
+    }
+    
     if (!process.env.NEXT_PUBLIC_FIREBASE_API_KEY || 
         process.env.NEXT_PUBLIC_FIREBASE_API_KEY === 'AIzaSyDummyKeyForDevelopment123456789') {
       return { 
@@ -96,6 +108,10 @@ export async function loginWithEmail(email: string, password: string) {
 // Google Sign In
 export async function loginWithGoogle() {
   try {
+    if (!auth) {
+      return { user: null, error: 'Firebase auth not initialized' };
+    }
+    
     if (!process.env.NEXT_PUBLIC_FIREBASE_API_KEY || 
         process.env.NEXT_PUBLIC_FIREBASE_API_KEY === 'AIzaSyDummyKeyForDevelopment123456789') {
       return { 

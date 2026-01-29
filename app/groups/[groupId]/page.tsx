@@ -199,6 +199,17 @@ export default function GroupDetailPage() {
                 </p>
               </div>
             </div>
+
+            {/* Add Expense Button */}
+            <div className="pt-6 mt-6 border-t">
+              <Link
+                href={`/groups/${groupId}/add-expense`}
+                className="inline-flex items-center bg-green-600 text-white px-6 py-3 rounded-lg hover:bg-green-700 font-medium"
+              >
+                <span className="mr-2 text-xl">+</span>
+                Add Expense
+              </Link>
+            </div>
           </div>
         </div>
 
