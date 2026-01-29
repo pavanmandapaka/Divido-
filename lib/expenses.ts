@@ -10,6 +10,10 @@ import {
   serverTimestamp,
   Timestamp,
   getDoc,
+  getDocs,
+  query,
+  where,
+  orderBy,
   Firestore
 } from 'firebase/firestore';
 import { db } from './firebase';
@@ -304,6 +308,82 @@ export async function createExpense(input: CreateExpenseInput): Promise<{
   }
 }
 
+/**
+ * Fetch all expenses for a group, sorted by date (latest first)
+ * 
+ * @param groupId - The group ID to fetch expenses for
+ * @returns Array of expenses sorted by date descending
+ * 
+ * Firestore Query Explanation:
+ * - Uses composite query: WHERE groupId == X ORDER BY date DESC
+ * - Requires composite index on (groupId ASC, date DESC)
+ * - Firestore will auto-prompt to create index on first run
+ */
+export async function getExpensesByGroupId(groupId: string): Promise<{
+  success: boolean;
+  expenses?: Expense[];
+  error?: string;
+}> {
+  try {
+    if (!groupId) {
+      return { success: false, error: 'Group ID is required' };
+    }
+
+    const expensesRef = collection(getDb(), 'expenses');
+    
+    // Query: Get all expenses for this group, sorted by date (newest first)
+    const q = query(
+      expensesRef,
+      where('groupId', '==', groupId),
+      orderBy('date', 'desc')
+    );
+
+    const querySnapshot = await getDocs(q);
+
+    const expenses: Expense[] = querySnapshot.docs.map(doc => {
+      const data = doc.data();
+      return {
+        expenseId: doc.id,
+        groupId: data.groupId,
+        amount: data.amount,
+        paidBy: data.paidBy,
+        participants: data.participants,
+        splitType: data.splitType,
+        splitDetails: data.splitDetails,
+        category: data.category,
+        note: data.note,
+        date: data.date,
+        createdAt: data.createdAt,
+        createdBy: data.createdBy,
+        updatedAt: data.updatedAt,
+        isSettled: data.isSettled,
+        currency: data.currency,
+      } as Expense;
+    });
+
+    return {
+      success: true,
+      expenses,
+    };
+
+  } catch (error: any) {
+    console.error('Error fetching expenses:', error);
+    
+    // Check if it's an index error
+    if (error.code === 'failed-precondition') {
+      return {
+        success: false,
+        error: 'Database index required. Check console for setup link.',
+      };
+    }
+    
+    return {
+      success: false,
+      error: error.message || 'Failed to fetch expenses',
+    };
+  }
+}
+
 // TODO: Phase 4 Day 4+ - Balance calculation functions
 // - calculateUserBalances(groupId) - Calculate who owes whom
 // - getGroupBalances(groupId) - Get current balance state
@@ -315,7 +395,6 @@ export async function createExpense(input: CreateExpenseInput): Promise<{
 // - getSettlementHistory(groupId)
 
 // TODO: Phase 5 - Expense management
-// - getGroupExpenses(groupId) - List expenses
 // - getExpenseById(expenseId) - Get single expense
 // - updateExpense(expenseId, updates) - Edit expense
 // - deleteExpense(expenseId) - Remove expense

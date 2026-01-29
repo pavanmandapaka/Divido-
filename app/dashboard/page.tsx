@@ -1,18 +1,15 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { useRouter, useSearchParams } from 'next/navigation'
+import { useRouter } from 'next/navigation'
 import { useAuth } from '@/contexts/AuthProvider'
 import Navbar from '@/components/Navbar'
 import { getUserGroups, Group } from '@/lib/groups'
 import Link from 'next/link'
 
-export const dynamic = 'force-dynamic'
-
 export default function DashboardPage() {
   const { user, loading } = useAuth()
   const router = useRouter()
-  const searchParams = useSearchParams()
   const [groups, setGroups] = useState<Array<{ group: Group; role: 'admin' | 'member' }>>([])
   const [loadingGroups, setLoadingGroups] = useState(true)
   const [error, setError] = useState('')
@@ -27,7 +24,7 @@ export default function DashboardPage() {
     if (user) {
       fetchGroups()
     }
-  }, [user, searchParams])
+  }, [user])
 
   const fetchGroups = async () => {
     if (!user) return

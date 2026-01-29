@@ -4,7 +4,24 @@ import { useEffect, useState } from 'react'
 import { useRouter, useParams } from 'next/navigation'
 import { useAuth } from '@/contexts/AuthProvider'
 import { getGroupById, Group, createGroupInvite } from '@/lib/groups'
+import { getExpensesByGroupId, Expense } from '@/lib/expenses'
 import Link from 'next/link'
+
+// Category icons/emojis for visual display
+const CATEGORY_ICONS: Record<string, string> = {
+  food: '🍽️',
+  transport: '🚗',
+  accommodation: '🏨',
+  groceries: '🛒',
+  entertainment: '🎬',
+  shopping: '🛍️',
+  utilities: '💡',
+  rent: '🏠',
+  medical: '💊',
+  travel: '✈️',
+  subscriptions: '📱',
+  other: '📦',
+}
 
 export default function GroupDetailPage() {
   const router = useRouter()
@@ -13,7 +30,9 @@ export default function GroupDetailPage() {
   
   const [group, setGroup] = useState<Group | null>(null)
   const [role, setRole] = useState<'admin' | 'member' | null>(null)
+  const [expenses, setExpenses] = useState<Expense[]>([])
   const [loading, setLoading] = useState(true)
+  const [expensesLoading, setExpensesLoading] = useState(true)
   const [error, setError] = useState('')
   const [inviteLink, setInviteLink] = useState('')
   const [generatingInvite, setGeneratingInvite] = useState(false)
@@ -30,6 +49,7 @@ export default function GroupDetailPage() {
   useEffect(() => {
     if (user && groupId) {
       fetchGroup()
+      fetchExpenses()
     }
   }, [user, groupId])
 
@@ -60,6 +80,36 @@ export default function GroupDetailPage() {
     } finally {
       setLoading(false)
     }
+  }
+
+  const fetchExpenses = async () => {
+    if (!groupId) return
+
+    try {
+      setExpensesLoading(true)
+      const result = await getExpensesByGroupId(groupId)
+      
+      if (result.success && result.expenses) {
+        setExpenses(result.expenses)
+      } else {
+        console.error('Failed to fetch expenses:', result.error)
+      }
+    } catch (err) {
+      console.error('Error fetching expenses:', err)
+    } finally {
+      setExpensesLoading(false)
+    }
+  }
+
+  // Format date for display
+  const formatDate = (timestamp: any): string => {
+    if (!timestamp) return ''
+    const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp)
+    return date.toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    })
   }
 
   const handleGenerateInvite = async () => {
@@ -211,6 +261,63 @@ export default function GroupDetailPage() {
               </Link>
             </div>
           </div>
+        </div>
+
+        {/* Expenses List Section */}
+        <div className="bg-white rounded-lg shadow-md p-8 mt-6">
+          <h2 className="text-xl font-bold text-slate-900 mb-4">
+            Expenses
+          </h2>
+
+          {expensesLoading ? (
+            <div className="text-center py-8 text-slate-500">
+              Loading expenses...
+            </div>
+          ) : expenses.length === 0 ? (
+            <div className="text-center py-8">
+              <p className="text-slate-500 mb-4">No expenses yet</p>
+              <Link
+                href={`/groups/${groupId}/add-expense`}
+                className="text-blue-600 hover:underline"
+              >
+                Add your first expense →
+              </Link>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {expenses.map((expense) => (
+                <div
+                  key={expense.expenseId}
+                  className="flex items-center justify-between p-4 bg-slate-50 rounded-lg hover:bg-slate-100 transition-colors"
+                >
+                  {/* Left: Category icon + details */}
+                  <div className="flex items-center gap-4">
+                    <div className="text-2xl">
+                      {CATEGORY_ICONS[expense.category] || '📦'}
+                    </div>
+                    <div>
+                      <p className="font-medium text-slate-900">
+                        {expense.note || expense.category.charAt(0).toUpperCase() + expense.category.slice(1)}
+                      </p>
+                      <p className="text-sm text-slate-500">
+                        Paid by <span className="font-medium">{expense.paidBy === user?.uid ? 'You' : expense.paidBy.slice(0, 8) + '...'}</span>
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Right: Amount + date */}
+                  <div className="text-right">
+                    <p className="font-semibold text-slate-900">
+                      {group.currency} {expense.amount.toFixed(2)}
+                    </p>
+                    <p className="text-sm text-slate-500">
+                      {formatDate(expense.date)}
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Invite Section - Only for Admins */}
