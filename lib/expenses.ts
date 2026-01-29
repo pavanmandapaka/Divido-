@@ -13,7 +13,6 @@ import {
   getDocs,
   query,
   where,
-  orderBy,
   Firestore
 } from 'firebase/firestore';
 import { db } from './firebase';
@@ -331,11 +330,10 @@ export async function getExpensesByGroupId(groupId: string): Promise<{
 
     const expensesRef = collection(getDb(), 'expenses');
     
-    // Query: Get all expenses for this group, sorted by date (newest first)
+    // Query: Get all expenses for this group (no orderBy to avoid index requirement)
     const q = query(
       expensesRef,
-      where('groupId', '==', groupId),
-      orderBy('date', 'desc')
+      where('groupId', '==', groupId)
     );
 
     const querySnapshot = await getDocs(q);
@@ -359,6 +357,13 @@ export async function getExpensesByGroupId(groupId: string): Promise<{
         isSettled: data.isSettled,
         currency: data.currency,
       } as Expense;
+    });
+
+    // Sort by date (newest first) in JavaScript
+    expenses.sort((a, b) => {
+      const dateA = a.date.toDate ? a.date.toDate().getTime() : new Date(a.date as any).getTime();
+      const dateB = b.date.toDate ? b.date.toDate().getTime() : new Date(b.date as any).getTime();
+      return dateB - dateA; // Descending order (newest first)
     });
 
     return {
@@ -394,7 +399,235 @@ export async function getExpensesByGroupId(groupId: string): Promise<{
 // - markExpenseSettled(expenseId)
 // - getSettlementHistory(groupId)
 
-// TODO: Phase 5 - Expense management
-// - getExpenseById(expenseId) - Get single expense
-// - updateExpense(expenseId, updates) - Edit expense
-// - deleteExpense(expenseId) - Remove expense
+/**
+ * Get a single expense by ID
+ * 
+ * @param expenseId - The expense ID to fetch
+ * @returns Expense data or null if not found
+ */
+export async function getExpenseById(expenseId: string): Promise<{
+  success: boolean;
+  expense?: Expense;
+  error?: string;
+}> {
+  try {
+    if (!expenseId) {
+      return { success: false, error: 'Expense ID is required' };
+    }
+
+    const expenseRef = doc(getDb(), 'expenses', expenseId);
+    const expenseSnap = await getDoc(expenseRef);
+
+    if (!expenseSnap.exists()) {
+      return { success: false, error: 'Expense not found' };
+    }
+
+    const data = expenseSnap.data();
+    const expense: Expense = {
+      expenseId: expenseSnap.id,
+      groupId: data.groupId,
+      amount: data.amount,
+      paidBy: data.paidBy,
+      participants: data.participants,
+      splitType: data.splitType,
+      splitDetails: data.splitDetails,
+      category: data.category,
+      note: data.note,
+      date: data.date,
+      createdAt: data.createdAt,
+      createdBy: data.createdBy,
+      updatedAt: data.updatedAt,
+      isSettled: data.isSettled,
+      currency: data.currency,
+    };
+
+    return { success: true, expense };
+
+  } catch (error: any) {
+    console.error('Error fetching expense:', error);
+    return { success: false, error: error.message || 'Failed to fetch expense' };
+  }
+}
+
+/**
+ * Update expense input interface
+ */
+export interface UpdateExpenseInput {
+  expenseId: string;
+  amount: number;
+  paidBy: string;
+  participants: string[];
+  splitType: 'equal' | 'exact' | 'percentage' | 'custom';
+  splitInput?: { [userId: string]: number };
+  category: string;
+  note: string;
+  date: Date;
+  updatedBy: string; // User ID of who is updating
+  isAdmin?: boolean; // Whether the updater is a group admin
+}
+
+/**
+ * Update an existing expense
+ * Only the expense creator or group admin can update the expense
+ * Recalculates splits based on new data
+ * 
+ * @param input - Update expense input
+ * @returns Success status with error if failed
+ */
+export async function updateExpense(input: UpdateExpenseInput): Promise<{
+  success: boolean;
+  error?: string;
+}> {
+  try {
+    // Fetch existing expense to check permissions
+    const expenseResult = await getExpenseById(input.expenseId);
+    if (!expenseResult.success || !expenseResult.expense) {
+      return { success: false, error: expenseResult.error || 'Expense not found' };
+    }
+
+    const existingExpense = expenseResult.expense;
+
+    // No permission check - any group member can edit
+
+    // Validate amount
+    if (typeof input.amount !== 'number' || isNaN(input.amount) || input.amount <= 0) {
+      return { success: false, error: 'Amount must be a positive number' };
+    }
+
+    // Validate participants
+    if (!input.participants || input.participants.length === 0) {
+      return { success: false, error: 'At least one participant is required' };
+    }
+
+    // Recalculate splits
+    const splitResult = calculateSplit(
+      input.splitType,
+      input.amount,
+      input.participants,
+      input.splitInput
+    );
+
+    if (!splitResult.valid) {
+      return { success: false, error: splitResult.error || 'Failed to calculate split' };
+    }
+
+    // Build split details
+    const splitDetails: Expense['splitDetails'] = {};
+    for (const userId of input.participants) {
+      const userSplit = splitResult.splitDetails[userId];
+      splitDetails[userId] = {
+        amount: userSplit.amount,
+        percentage: userSplit.percentage,
+        shares: userSplit.shares,
+        isSettled: existingExpense.splitDetails[userId]?.isSettled || false,
+      };
+    }
+
+    // Calculate the difference in amount for group total update
+    const amountDifference = input.amount - existingExpense.amount;
+
+    // Create batch for atomic update
+    const batch = writeBatch(getDb());
+
+    // Update expense document
+    const expenseRef = doc(getDb(), 'expenses', input.expenseId);
+    batch.update(expenseRef, {
+      amount: input.amount,
+      paidBy: input.paidBy,
+      participants: input.participants,
+      splitType: input.splitType,
+      splitDetails,
+      category: input.category,
+      note: input.note,
+      date: Timestamp.fromDate(input.date),
+      updatedAt: serverTimestamp(),
+    });
+
+    // Update group's totalExpenses if amount changed
+    if (amountDifference !== 0) {
+      const groupRef = doc(getDb(), 'groups', existingExpense.groupId);
+      const groupSnap = await getDoc(groupRef);
+      if (groupSnap.exists()) {
+        const currentTotal = groupSnap.data().totalExpenses || 0;
+        batch.update(groupRef, {
+          totalExpenses: currentTotal + amountDifference,
+          updatedAt: serverTimestamp(),
+        });
+      }
+    }
+
+    await batch.commit();
+
+    console.log('Expense updated successfully:', input.expenseId);
+    return { success: true };
+
+  } catch (error: any) {
+    console.error('Error updating expense:', error);
+    return { success: false, error: error.message || 'Failed to update expense' };
+  }
+}
+
+/**
+ * Delete an expense
+/**
+ * Delete an expense
+ * Only the expense creator or group admin can delete the expense
+ * Updates group's totalExpenses
+ * 
+ * @param expenseId - The expense ID to delete
+ * @param userId - The user ID attempting to delete
+ * @param isAdmin - Whether the user is a group admin
+ * @returns Success status with error if failed
+ */
+export async function deleteExpense(expenseId: string, userId: string, isAdmin: boolean = false): Promise<{
+  success: boolean;
+  error?: string;
+}> {
+  try {
+    if (!expenseId) {
+      return { success: false, error: 'Expense ID is required' };
+    }
+
+    if (!userId) {
+      return { success: false, error: 'User ID is required' };
+    }
+
+    // Fetch existing expense to check permissions
+    const expenseResult = await getExpenseById(expenseId);
+    if (!expenseResult.success || !expenseResult.expense) {
+      return { success: false, error: expenseResult.error || 'Expense not found' };
+    }
+
+    const expense = expenseResult.expense;
+
+    // No permission check - any group member can delete
+
+    // Create batch for atomic delete
+    const batch = writeBatch(getDb());
+
+    // Delete expense document
+    const expenseRef = doc(getDb(), 'expenses', expenseId);
+    batch.delete(expenseRef);
+
+    // Update group's totalExpenses
+    const groupRef = doc(getDb(), 'groups', expense.groupId);
+    const groupSnap = await getDoc(groupRef);
+    if (groupSnap.exists()) {
+      const currentTotal = groupSnap.data().totalExpenses || 0;
+      batch.update(groupRef, {
+        totalExpenses: Math.max(0, currentTotal - expense.amount),
+        updatedAt: serverTimestamp(),
+      });
+    }
+
+    await batch.commit();
+
+    console.log('Expense deleted successfully:', expenseId);
+    return { success: true };
+
+  } catch (error: any) {
+    console.error('Error deleting expense:', error);
+    return { success: false, error: error.message || 'Failed to delete expense' };
+  }
+}
+

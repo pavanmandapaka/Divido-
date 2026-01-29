@@ -87,9 +87,13 @@ export default function GroupDetailPage() {
 
     try {
       setExpensesLoading(true)
+      console.log('Fetching expenses for groupId:', groupId)
       const result = await getExpensesByGroupId(groupId)
       
+      console.log('Expenses result:', result)
+      
       if (result.success && result.expenses) {
+        console.log('Found expenses:', result.expenses.length)
         setExpenses(result.expenses)
       } else {
         console.error('Failed to fetch expenses:', result.error)
@@ -285,6 +289,7 @@ export default function GroupDetailPage() {
             </div>
           ) : (
             <div className="space-y-3">
+              {console.log('Rendering expenses list. Total:', expenses.length)}
               {expenses.map((expense) => (
                 <div
                   key={expense.expenseId}
@@ -305,14 +310,27 @@ export default function GroupDetailPage() {
                     </div>
                   </div>
 
-                  {/* Right: Amount + date */}
-                  <div className="text-right">
-                    <p className="font-semibold text-slate-900">
-                      {group.currency} {expense.amount.toFixed(2)}
-                    </p>
-                    <p className="text-sm text-slate-500">
-                      {formatDate(expense.date)}
-                    </p>
+                  {/* Right: Amount + date + edit button */}
+                  <div className="flex items-center gap-4">
+                    <div className="text-right">
+                      <p className="font-semibold text-slate-900">
+                        {group.currency} {expense.amount.toFixed(2)}
+                      </p>
+                      <p className="text-sm text-slate-500">
+                        {formatDate(expense.date)}
+                      </p>
+                    </div>
+                    {/* Edit button - always visible */}
+                    <Link
+                      href={`/groups/${groupId}/expense/${expense.expenseId}/edit`}
+                      className="flex items-center gap-2 px-3 py-2 text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors"
+                      title="Edit expense"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                        <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
+                      </svg>
+                      <span className="text-sm font-medium">Edit</span>
+                    </Link>
                   </div>
                 </div>
               ))}
